@@ -12,6 +12,7 @@ defmodule LokiLogger do
             loki_labels: nil,
             loki_host: nil,
             loki_scope_org_id: nil,
+            loki_path: nil,
             basic_auth_user: nil,
             basic_auth_password: nil
 
@@ -94,6 +95,7 @@ defmodule LokiLogger do
     max_buffer = Keyword.get(config, :max_buffer, 32)
     loki_labels = Keyword.get(config, :loki_labels, %{application: "loki_logger_library"})
     loki_host = Keyword.get(config, :loki_host, "http://localhost:3100")
+    loki_path = Keyword.get(config, :loki_path, "/api/prom/push")
     loki_scope_org_id = Keyword.get(config, :loki_scope_org_id, "fake")
 
     basic_auth_user = Keyword.get(config, :basic_auth_user)
@@ -108,6 +110,7 @@ defmodule LokiLogger do
         loki_labels: loki_labels,
         loki_host: loki_host,
         loki_scope_org_id: loki_scope_org_id,
+        loki_path: loki_path,
         basic_auth_user: basic_auth_user,
         basic_auth_password: basic_auth_password
     }
@@ -143,7 +146,13 @@ defmodule LokiLogger do
     %{state | buffer: buffer, buffer_size: buffer_size + 1}
   end
 
-  defp async_io(loki_host, loki_labels, loki_scope_org_id, output, state) do
+  defp async_io(%{
+         loki_host: loki_host,
+         loki_path: loki_path,
+         loki_labels: loki_labels,
+         loki_scope_org_id: loki_scope_org_id,
+         buffer: output
+       }) do
     bin_push_request = generate_bin_push_request(loki_labels, output)
 
     http_headers = [
@@ -167,7 +176,7 @@ defmodule LokiLogger do
       end
 
     # TODO: replace with async http call
-    case HTTPoison.post("#{loki_host}/api/prom/push", bin_push_request, http_headers, opts) do
+    case HTTPoison.post("#{loki_host}#{loki_path}", bin_push_request, http_headers, opts) do
       {:ok, %HTTPoison.Response{status_code: 204}} ->
         # expected
         :noop
@@ -253,12 +262,14 @@ defmodule LokiLogger do
   defp log_buffer(
          %{
            loki_host: loki_host,
+           loki_path: loki_path,
            loki_labels: loki_labels,
            loki_scope_org_id: loki_scope_org_id,
            buffer: buffer
          } = state
        ) do
-    async_io(loki_host, loki_labels, loki_scope_org_id, buffer, state)
+    state |> async_io()
+
     %{state | buffer: [], buffer_size: 0}
   end
 
