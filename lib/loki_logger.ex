@@ -146,13 +146,15 @@ defmodule LokiLogger do
     %{state | buffer: buffer, buffer_size: buffer_size + 1}
   end
 
-  defp async_io(%{
-         loki_host: loki_host,
-         loki_path: loki_path,
-         loki_labels: loki_labels,
-         loki_scope_org_id: loki_scope_org_id,
-         buffer: output
-       }) do
+  defp async_io(
+         %{
+           loki_host: loki_host,
+           loki_path: loki_path,
+           loki_labels: loki_labels,
+           loki_scope_org_id: loki_scope_org_id,
+           buffer: output
+         } = state
+       ) do
     bin_push_request = generate_bin_push_request(loki_labels, output)
 
     http_headers = [
@@ -259,15 +261,7 @@ defmodule LokiLogger do
 
   defp log_buffer(%{buffer_size: 0, buffer: []} = state), do: state
 
-  defp log_buffer(
-         %{
-           loki_host: loki_host,
-           loki_path: loki_path,
-           loki_labels: loki_labels,
-           loki_scope_org_id: loki_scope_org_id,
-           buffer: buffer
-         } = state
-       ) do
+  defp log_buffer(state) do
     state |> async_io()
 
     %{state | buffer: [], buffer_size: 0}
