@@ -29,6 +29,8 @@ defmodule LokiLogger.MixProject do
       {:jason, "~> 1.3.0"},
       {:ex_doc, ">= 0.0.0", only: :dev},
       {:benchee, "~> 1.1.0", only: :test},
+      {:tesla, "~> 1.4.0", only: [:dev, :test]},
+      {:hackney, "~> 1.10", only: [:dev, :test]},
       {:protobuf, "~> 0.9.0"},
       {:google_protos, "~> 0.2.0"},
       {:snappyer, "~> 1.2.8"}

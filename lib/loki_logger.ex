@@ -14,7 +14,8 @@ defmodule LokiLogger do
             loki_scope_org_id: nil,
             loki_path: nil,
             basic_auth_user: nil,
-            basic_auth_password: nil
+            basic_auth_password: nil,
+            http_client: nil
 
   def init(LokiLogger) do
     config = Application.get_env(:logger, :loki_logger)
@@ -152,7 +153,8 @@ defmodule LokiLogger do
            loki_path: loki_path,
            loki_labels: loki_labels,
            loki_scope_org_id: loki_scope_org_id,
-           buffer: output
+           buffer: output,
+           http_client: http_client
          } = state
        ) do
     bin_push_request = generate_bin_push_request(loki_labels, output)
@@ -168,37 +170,45 @@ defmodule LokiLogger do
         false -> nil
       end
 
-    opts =
-      case basic_auth do
-        %{user: user, password: password} ->
-          [hackney: [basic_auth: {user, password}]]
+    %{
+      method: :post,
+      url: "#{loki_host}#{loki_path}",
+      data: bin_push_request,
+      headers: http_headers,
+      auth:
+        basic_auth
+        |> case do
+          %{user: user, password: password} ->
+            %{user: user, password: password}
 
-        _ ->
-          []
-      end
+          _ ->
+            nil
+        end
+    }
+    |> http_client.()
 
-    # TODO: replace with async http call
-    case HTTPoison.post("#{loki_host}#{loki_path}", bin_push_request, http_headers, opts) do
-      {:ok, %HTTPoison.Response{status_code: 204}} ->
-        # expected
-        :noop
+    # # TODO: replace with async http call
+    # case HTTPoison.post("#{loki_host}#{loki_path}", bin_push_request, http_headers, opts) do
+    #   {:ok, %HTTPoison.Response{status_code: 204}} ->
+    #     # expected
+    #     :noop
 
-      {:ok, %HTTPoison.Response{status_code: status_code, body: body}} ->
-        IO.puts(
-          inspect(
-            output
-            |> List.keysort(1)
-            |> Enum.reverse(),
-            pretty: true
-          )
-        )
+    #   {:ok, %HTTPoison.Response{status_code: status_code, body: body}} ->
+    #     IO.puts(
+    #       inspect(
+    #         output
+    #         |> List.keysort(1)
+    #         |> Enum.reverse(),
+    #         pretty: true
+    #       )
+    #     )
 
-        raise "unexpected status code from loki backend #{status_code}" <>
-                Exception.format_exit(body)
+    #     raise "unexpected status code from loki backend #{status_code}" <>
+    #             Exception.format_exit(body)
 
-      {:error, %HTTPoison.Error{reason: reason}} ->
-        raise "http error from loki backend " <> Exception.format_exit(reason)
-    end
+    #   {:error, %HTTPoison.Error{reason: reason}} ->
+    #     raise "http error from loki backend " <> Exception.format_exit(reason)
+    # end
   end
 
   defp generate_bin_push_request(loki_labels, output) do
