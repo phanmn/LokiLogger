@@ -1,4 +1,4 @@
-use Mix.Config
+import Config
 
 config :logger,
   backends: [LokiLogger]
@@ -11,3 +11,5 @@ config :logger, :loki_logger,
   loki_labels: %{application: "loki_logger_library", elixir_node: node()},
   loki_host: "http://localhost:3100",
   loki_scope_org_id: "acme_inc"
+
+import_config "#{config_env()}.exs"
