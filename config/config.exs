@@ -5,7 +5,7 @@ config :logger,
 
 config :logger, :loki_logger,
   level: :debug,
-  format: "$metadata level=$level $levelpad$message",
+  format: "$time $metadata[$level] $message\n",
   metadata: :all,
   max_buffer: 300,
   loki_labels: %{application: "loki_logger_library", elixir_node: node()},

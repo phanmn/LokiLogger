@@ -2,7 +2,6 @@ defmodule LokiLogger do
   @behaviour :gen_event
   @moduledoc false
 
-  @derive {Inspect, except: [:basic_auth_user, :basic_auth_password]}
   defstruct buffer: [],
             buffer_size: 0,
             format: nil,
@@ -10,12 +9,9 @@ defmodule LokiLogger do
             max_buffer: nil,
             metadata: nil,
             loki_labels: nil,
-            loki_host: nil,
-            loki_scope_org_id: nil,
-            loki_path: nil,
-            basic_auth_user: nil,
-            basic_auth_password: nil,
-            http_client: nil
+            loki_url: nil,
+            tesla_client: nil,
+            supervisor: nil
 
   def init(LokiLogger) do
     config = Application.get_env(:logger, :loki_logger)
@@ -85,35 +81,35 @@ defmodule LokiLogger do
     level = Keyword.get(config, :level, :info)
 
     format =
-      Logger.Formatter.compile(
-        Keyword.get(config, :format, "$metadata level=$level $levelpad$message")
-      )
+      Logger.Formatter.compile(Keyword.get(config, :format, "$time $metadata[$level] $message\n"))
 
-    metadata =
-      Keyword.get(config, :metadata, :all)
-      |> configure_metadata()
-
-    max_buffer = Keyword.get(config, :max_buffer, 32)
-    loki_labels = Keyword.get(config, :loki_labels, %{application: "loki_logger_library"})
-    loki_host = Keyword.get(config, :loki_host, "http://localhost:3100")
-    loki_path = Keyword.get(config, :loki_path, "/api/prom/push")
-    loki_scope_org_id = Keyword.get(config, :loki_scope_org_id, "fake")
-
-    basic_auth_user = Keyword.get(config, :basic_auth_user)
-    basic_auth_password = Keyword.get(config, :basic_auth_password)
+    loki_url =
+      Keyword.get(config, :loki_host, "http://localhost:3100") <>
+        Keyword.get(config, :loki_path, "/api/prom/push")
 
     %{
       state
       | format: format,
-        metadata: metadata,
+        metadata:
+          Keyword.get(config, :metadata, :all)
+          |> configure_metadata(),
         level: level,
-        max_buffer: max_buffer,
-        loki_labels: loki_labels,
-        loki_host: loki_host,
-        loki_scope_org_id: loki_scope_org_id,
-        loki_path: loki_path,
-        basic_auth_user: basic_auth_user,
-        basic_auth_password: basic_auth_password
+        max_buffer: Keyword.get(config, :max_buffer, 32),
+        loki_labels: Keyword.get(config, :loki_labels, %{application: "loki_logger_library"}),
+        loki_url: loki_url,
+        tesla_client: config |> tesla_client(),
+        supervisor:
+          Supervisor.start_link(
+            [
+              {Finch,
+               name: LokiLogger.Finch,
+               pools: %{
+                 "#{loki_url}" => [size: 16, count: 4, pool_max_idle_time: 10_000]
+               }},
+              {Task.Supervisor, name: LokiLogger.TaskSupervisor}
+            ],
+            strategy: :one_for_one
+          )
     }
   end
 
@@ -147,68 +143,28 @@ defmodule LokiLogger do
     %{state | buffer: buffer, buffer_size: buffer_size + 1}
   end
 
-  defp async_io(
-         %{
-           loki_host: loki_host,
-           loki_path: loki_path,
-           loki_labels: loki_labels,
-           loki_scope_org_id: loki_scope_org_id,
-           buffer: output,
-           http_client: http_client
-         } = state
-       ) do
-    bin_push_request = generate_bin_push_request(loki_labels, output)
+  defp async_io(%{
+         loki_url: loki_url,
+         loki_labels: loki_labels,
+         buffer: output,
+         tesla_client: tesla_client
+       }) do
+    Task.Supervisor.start_child(LokiLogger.TaskSupervisor, fn ->
+      tesla_client
+      |> Tesla.post(loki_url, generate_bin_push_request(loki_labels, output))
+      |> case do
+        {:ok, %Tesla.Env{status: 204}} ->
+          # expected
+          :noop
 
-    http_headers = [
-      {"Content-Type", "application/x-protobuf"},
-      {"X-Scope-OrgID", loki_scope_org_id}
-    ]
+        {:ok, %Tesla.Env{status: status, body: body}} ->
+          "Unexpected status code from loki backend #{status}" |> IO.puts()
+          body |> inspect() |> IO.puts()
 
-    basic_auth =
-      case not is_nil(state.basic_auth_user) and not is_nil(state.basic_auth_password) do
-        true -> %{user: state.basic_auth_user, password: state.basic_auth_password}
-        false -> nil
+        v ->
+          v |> inspect() |> IO.puts()
       end
-
-    %{
-      method: :post,
-      url: "#{loki_host}#{loki_path}",
-      data: bin_push_request,
-      headers: http_headers,
-      auth:
-        basic_auth
-        |> case do
-          %{user: user, password: password} ->
-            %{user: user, password: password}
-
-          _ ->
-            nil
-        end
-    }
-    |> http_client.()
-
-    # # TODO: replace with async http call
-    # case HTTPoison.post("#{loki_host}#{loki_path}", bin_push_request, http_headers, opts) do
-    #   {:ok, %HTTPoison.Response{status_code: 204}} ->
-    #     # expected
-    #     :noop
-
-    #   {:ok, %HTTPoison.Response{status_code: status_code, body: body}} ->
-    #     IO.puts(
-    #       inspect(
-    #         output
-    #         |> List.keysort(1)
-    #         |> Enum.reverse(),
-    #         pretty: true
-    #       )
-    #     )
-
-    #     raise "unexpected status code from loki backend #{status_code}" <>
-    #             Exception.format_exit(body)
-
-    #   {:error, %HTTPoison.Error{reason: reason}} ->
-    #     raise "http error from loki backend " <> Exception.format_exit(reason)
-    # end
+    end)
   end
 
   defp generate_bin_push_request(loki_labels, output) do
@@ -225,7 +181,7 @@ defmodule LokiLogger do
         seconds = Kernel.trunc(ts / 1_000_000_000)
         nanos = ts - seconds * 1_000_000_000
 
-        Logproto.Entry.new(
+        Logproto.EntryAdapter.new(
           timestamp: Google.Protobuf.Timestamp.new(seconds: seconds, nanos: nanos),
           line: line
         )
@@ -234,7 +190,7 @@ defmodule LokiLogger do
     request =
       Logproto.PushRequest.new(
         streams: [
-          Logproto.Stream.new(
+          Logproto.StreamAdapter.new(
             labels: labels,
             entries: sorted_entries
           )
@@ -279,5 +235,30 @@ defmodule LokiLogger do
 
   defp flush(state) do
     log_buffer(state)
+  end
+
+  defp tesla_client(config) do
+    http_headers = [
+      {"Content-Type", "application/x-protobuf"},
+      {"X-Scope-OrgID", Keyword.get(config, :loki_scope_org_id, "fake")}
+    ]
+
+    basic_auth_user = Keyword.get(config, :basic_auth_user)
+    basic_auth_password = Keyword.get(config, :basic_auth_password)
+
+    case not is_nil(basic_auth_user) and not is_nil(basic_auth_password) do
+      true ->
+        [
+          {Tesla.Middleware.Headers, http_headers},
+          {Tesla.Middleware.BasicAuth,
+           %{username: basic_auth_user, password: basic_auth_password}}
+        ]
+
+      false ->
+        [
+          {Tesla.Middleware.Headers, http_headers}
+        ]
+    end
+    |> Tesla.client({Tesla.Adapter.Finch, name: LokiLogger.Finch})
   end
 end

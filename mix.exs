@@ -25,15 +25,14 @@ defmodule LokiLogger.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:httpoison, "~> 1.8.1"},
       {:jason, "~> 1.3.0"},
       {:ex_doc, ">= 0.0.0", only: :dev},
       {:benchee, "~> 1.1.0", only: :test},
-      {:tesla, "~> 1.4.0", only: [:dev, :test]},
-      {:hackney, "~> 1.10", only: [:dev, :test]},
-      {:protobuf, "~> 0.9.0"},
-      {:google_protos, "~> 0.2.0"},
-      {:snappyer, "~> 1.2.8"}
+      {:tesla, "~> 1.4.0"},
+      {:finch, "~> 0.13"},
+      {:protobuf, "~> 0.10.0"},
+      {:google_protos, "~> 0.3.0"},
+      {:snappyer, "~> 1.2.8"},
     ]
   end
 
