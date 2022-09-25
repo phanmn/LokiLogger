@@ -8,9 +8,6 @@ defmodule LokiLogger do
             level: nil,
             max_buffer: nil,
             metadata: nil,
-            loki_labels: nil,
-            loki_url: nil,
-            tesla_client: nil,
             supervisor: nil
 
   def init(LokiLogger) do
@@ -95,9 +92,6 @@ defmodule LokiLogger do
           |> configure_metadata(),
         level: level,
         max_buffer: Keyword.get(config, :max_buffer, 32),
-        loki_labels: Keyword.get(config, :loki_labels, %{application: "loki_logger_library"}),
-        loki_url: loki_url,
-        tesla_client: config |> tesla_client(),
         supervisor:
           Supervisor.start_link(
             [
@@ -106,7 +100,12 @@ defmodule LokiLogger do
                pools: %{
                  "#{loki_url}" => [size: 16, count: 4, pool_max_idle_time: 10_000]
                }},
-              {Task.Supervisor, name: LokiLogger.TaskSupervisor}
+              {Task.Supervisor, name: LokiLogger.TaskSupervisor},
+              {LokiLogger.Exporter,
+               loki_labels:
+                 Keyword.get(config, :loki_labels, %{application: "loki_logger_library"}),
+               loki_url: loki_url,
+               tesla_client: config |> tesla_client()}
             ],
             strategy: :one_for_one
           )
@@ -143,65 +142,9 @@ defmodule LokiLogger do
     %{state | buffer: buffer, buffer_size: buffer_size + 1}
   end
 
-  defp async_io(%{
-         loki_url: loki_url,
-         loki_labels: loki_labels,
-         buffer: output,
-         tesla_client: tesla_client
-       }) do
-    Task.Supervisor.start_child(LokiLogger.TaskSupervisor, fn ->
-      tesla_client
-      |> Tesla.post(loki_url, generate_bin_push_request(loki_labels, output))
-      |> case do
-        {:ok, %Tesla.Env{status: 204}} ->
-          # expected
-          :noop
-
-        {:ok, %Tesla.Env{status: status, body: body}} ->
-          "Unexpected status code from loki backend #{status}" |> IO.puts()
-          body |> inspect() |> IO.puts()
-
-        v ->
-          v |> inspect() |> IO.puts()
-      end
-    end)
-  end
-
-  defp generate_bin_push_request(loki_labels, output) do
-    labels =
-      Enum.map(loki_labels, fn {k, v} -> "#{k}=\"#{v}\"" end)
-      |> Enum.join(",")
-
-    labels = "{" <> labels <> "}"
-    # sort entries on epoch seconds as first element of tuple, to prevent out-of-order entries
-    sorted_entries =
-      output
-      |> List.keysort(0)
-      |> Enum.map(fn {ts, line} ->
-        seconds = Kernel.trunc(ts / 1_000_000_000)
-        nanos = ts - seconds * 1_000_000_000
-
-        Logproto.EntryAdapter.new(
-          timestamp: Google.Protobuf.Timestamp.new(seconds: seconds, nanos: nanos),
-          line: line
-        )
-      end)
-
-    request =
-      Logproto.PushRequest.new(
-        streams: [
-          Logproto.StreamAdapter.new(
-            labels: labels,
-            entries: sorted_entries
-          )
-        ]
-      )
-
-    {:ok, bin_push_request} =
-      Logproto.PushRequest.encode(request)
-      |> :snappyer.compress()
-
-    bin_push_request
+  defp async_io(output) do
+    output
+    |> LokiLogger.Exporter.submit()
   end
 
   defp format_event(level, msg, ts, md, %{format: format, metadata: keys} = _state) do
@@ -228,7 +171,7 @@ defmodule LokiLogger do
   defp log_buffer(%{buffer_size: 0, buffer: []} = state), do: state
 
   defp log_buffer(state) do
-    state |> async_io()
+    state.buffer |> async_io()
 
     %{state | buffer: [], buffer_size: 0}
   end
