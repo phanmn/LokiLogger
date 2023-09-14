@@ -82,7 +82,7 @@ defmodule LokiLogger do
 
     loki_url =
       Keyword.get(config, :loki_host, "http://localhost:3100") <>
-        Keyword.get(config, :loki_path, "/api/prom/push")
+        Keyword.get(config, :loki_path, "/loki/api/v1/push")
 
     %{
       state
