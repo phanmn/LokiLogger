@@ -30,7 +30,7 @@ defmodule LokiLogger.MixProject do
       {:benchee, "~> 1.1.0", only: :test},
       {:tesla, "~> 1.11"},
       {:finch, "~> 0.17"},
-      {:protobuf, "~> 0.10.0"},
+      {:protobuf, "~> 0.11"},
       {:google_protos, "~> 0.3.0"},
       {:snappyer, "~> 1.2.8"},
     ]
