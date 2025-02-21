@@ -31,7 +31,6 @@ defmodule LokiLogger.MixProject do
       {:tesla, "~> 1.11"},
       {:finch, "~> 0.17"},
       {:protobuf, "~> 0.11"},
-      {:google_protos, "~> 0.4.0"},
       {:snappyer, "~> 1.2.8"},
     ]
   end
