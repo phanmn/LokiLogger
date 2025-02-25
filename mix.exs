@@ -31,7 +31,7 @@ defmodule LokiLogger.MixProject do
       {:tesla, "~> 1.11"},
       {:finch, "~> 0.17"},
       {:protobuf, "~> 0.11"},
-      {:snappyer, "~> 1.2.8"},
+      {:snappyer, git: "https://github.com/phanmn/snappyer.git", branch: "master"},
     ]
   end
 
