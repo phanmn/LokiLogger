@@ -4,7 +4,7 @@ defmodule LokiLogger.MixProject do
   def project do
     [
       app: :loki_logger,
-      version: "0.3.1",
+      version: "0.4",
       elixir: "~> 1.8",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -30,7 +30,7 @@ defmodule LokiLogger.MixProject do
       {:benchee, "~> 1.1.0", only: :test},
       {:tesla, "~> 1.11"},
       {:finch, "~> 0.17"},
-      {:protobuf, "~> 0.11"},
+      {:protobuf, "~> 0.15"},
       {:snappyer, git: "https://github.com/phanmn/snappyer.git", branch: "master"},
     ]
   end
