@@ -4,9 +4,10 @@ defmodule LokiLogger.MixProject do
   def project do
     [
       app: :loki_logger,
-      version: "0.4.0",
+      version: "0.5.0",
       elixir: "~> 1.8",
       start_permanent: Mix.env() == :prod,
+      elixirc_paths: elixirc_paths(Mix.env()),
       deps: deps(),
       description: description(),
       package: package(),
@@ -14,6 +15,9 @@ defmodule LokiLogger.MixProject do
       source_url: "https://github.com/wardbekker/LokiLogger.git"
     ]
   end
+
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_), do: ["lib"]
 
   # Run "mix help compile.app" to learn about applications.
   def application do
@@ -33,6 +37,8 @@ defmodule LokiLogger.MixProject do
       {:finch, "~> 0.17"},
       {:protobuf, "~> 0.15"},
       {:snappyer, git: "https://github.com/phanmn/snappyer.git", branch: "master"},
+      {:plug, "~> 1.16", only: :test},
+      {:bandit, "~> 1.5", only: :test}
     ]
   end
 

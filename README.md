@@ -145,6 +145,62 @@ Both Option A and Option B share the same `LokiLogger.Exporter` internally
 The producing process never blocks on Loki — submission to the Exporter is a
 non-blocking cast.
 
+## Testing against a fake Loki server
+
+This repo ships an in-process HTTP server (`LokiLogger.FakeLokiServer`) that
+mimics Loki's `/loki/api/v1/push` endpoint — it decodes the snappy-compressed
+protobuf body and forwards `Logproto.PushRequest` structs to a subscribed
+test pid, so you can assert on what would have been sent.
+
+Example (compile only in test, requires `:plug` and `:bandit`):
+
+```elixir
+defmodule MyApp.LokiLoggerTest do
+  use ExUnit.Case, async: false
+
+  alias LokiLogger.FakeLokiServer
+
+  setup do
+    Logger.remove_backend(LokiLogger)
+    FakeLokiServer.reset()
+    {:ok, server, url} = FakeLokiServer.start()
+    FakeLokiServer.listen_with(self())
+
+    Application.put_env(:logger, :loki_logger,
+      loki_host: url,
+      loki_labels: %{app: "test"},
+      max_buffer: 1,
+      flush_interval_ms: 0
+    )
+
+    LokiLogger.start_pipeline()
+    on_exit(fn -> Process.exit(server, :normal) end)
+    :ok
+  end
+
+  test "ships a line to Loki" do
+    LokiLogger.Exporter.log_event({1_000_000_000, "hello loki"})
+
+    assert_receive {:loki_push, {:ok, push}, _headers}, 1_000
+    [stream] = push.streams
+    assert [%{line: "hello loki"}] = stream.entries
+  end
+
+  test "retries 5xx then succeeds" do
+    FakeLokiServer.queue_response(503, "boom")
+    FakeLokiServer.queue_response(204, "")
+
+    LokiLogger.Exporter.log_event({1_000_000_000, "retry me"})
+
+    assert_receive {:loki_push, _, _}, 500
+    assert_receive {:loki_push, _, _}, 500
+  end
+end
+```
+
+See `test/loki_logger_integration_test.exs` in this repo for the full set of
+patterns (batching, retry, header forwarding, time-based flush).
+
 ## Protobuf regeneration
 
 Only needed when modifying the proto files:

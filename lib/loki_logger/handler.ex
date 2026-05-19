@@ -82,6 +82,9 @@ defmodule LokiLogger.Handler do
 
       case :logger.add_handler(handler_id, __MODULE__, %{level: level, config: config_map}) do
         :ok -> :ok
+        # OTP returns `:already_exist` (singular) when a handler with this
+        # id is already registered — treat that as success for idempotency.
+        {:error, {:already_exist, _}} -> :ok
         {:error, {:already_exists, _}} -> :ok
         error -> error
       end

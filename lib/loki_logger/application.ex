@@ -5,28 +5,47 @@ defmodule LokiLogger.Application do
 
   @impl true
   def start(_type, _args) do
-    maybe_install_handler()
-    Supervisor.start_link([], strategy: :one_for_one, name: LokiLogger.AppSupervisor)
+    # AppSupervisor is always started, even when LokiLogger isn't configured,
+    # so that `LokiLogger.start_pipeline/1` can later add the pipeline as a
+    # permanent child if config arrives at runtime.
+    result =
+      Supervisor.start_link([],
+        strategy: :one_for_one,
+        name: LokiLogger.AppSupervisor,
+        max_restarts: 100,
+        max_seconds: 60
+      )
+
+    if loki_logger_configured?() do
+      # Start the pipeline supervisor as a permanent child of AppSupervisor
+      # so OTP will keep restarting it if it crashes.
+      _ = LokiLogger.start_pipeline()
+
+      if not gen_event_backend_configured?() do
+        case LokiLogger.Handler.install() do
+          :ok ->
+            :ok
+
+          # Already installed (e.g. application restart). Stay idempotent.
+          {:error, {:already_exist, _}} ->
+            :ok
+
+          {:error, {:already_exists, _}} ->
+            :ok
+
+          error ->
+            raise "LokiLogger handler install failed: #{inspect(error)}"
+        end
+      end
+    end
+
+    result
   end
 
-  # Auto-install the :logger handler when LokiLogger config exists but the
-  # gen_event backend isn't already wired up — the user has opted into
-  # LokiLogger but not into the legacy backend, so use the modern path.
-  defp maybe_install_handler do
-    with config when is_list(config) and config != [] <-
-           Application.get_env(:logger, :loki_logger),
-         false <- gen_event_backend_configured?() do
-      case LokiLogger.Handler.install() do
-        :ok ->
-          :ok
-
-        error ->
-          # Boot fails loudly on misconfiguration rather than silently
-          # swallowing — easier to debug than a missing log handler.
-          raise "LokiLogger handler install failed: #{inspect(error)}"
-      end
-    else
-      _ -> :ok
+  defp loki_logger_configured? do
+    case Application.get_env(:logger, :loki_logger) do
+      config when is_list(config) and config != [] -> true
+      _ -> false
     end
   end
 

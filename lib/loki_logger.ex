@@ -14,15 +14,16 @@ defmodule LokiLogger do
     naturally instead of going through Logger's single backend process.
 
   Both paths share the same `LokiLogger.Exporter` (and therefore the same Finch
-  pool, batch buffer, retry/backoff, overflow queue, and metrics).
+  pool, batch buffer, retry/backoff, overflow queue, and metrics). The whole
+  pipeline runs under `LokiLogger.AppSupervisor` with permanent restart, so a
+  crash in the Exporter/Finch doesn't leave the handler dangling.
   """
 
   @behaviour :gen_event
 
   defstruct format: nil,
             level: nil,
-            metadata: nil,
-            supervisor: nil
+            metadata: nil
 
   ## :gen_event callbacks
 
@@ -33,8 +34,7 @@ defmodule LokiLogger do
 
       _ ->
         # No `:logger, :loki_logger` config — stay dormant rather than
-        # silently shipping to `http://localhost:3100`. The caller listed
-        # `LokiLogger` in `:logger, backends:` without saying where Loki is.
+        # silently shipping to `http://localhost:3100`.
         {:error, :no_loki_logger_config}
     end
   end
@@ -83,21 +83,108 @@ defmodule LokiLogger do
     :ok
   end
 
-  ## Public bootstrap (used by LokiLogger.Handler)
+  ## Public bootstrap (used by LokiLogger.Application and LokiLogger.Handler)
 
   @doc """
-  Start the LokiLogger pipeline (Finch pool, Task supervisor, Exporter) on
-  demand. Idempotent — returns the existing supervisor pid if already started.
+  Ensure the LokiLogger pipeline (Finch pool, Task supervisor, Exporter) is
+  running, adding it as a permanent child of `LokiLogger.AppSupervisor` so OTP
+  will restart it on crash. Idempotent — returns the existing supervisor pid
+  if already started.
 
   `opts` is a keyword list merged on top of `Application.get_env(:logger,
-  :loki_logger)`.
+  :loki_logger)`. Note that opts are only applied when the pipeline is being
+  *created*; an already-running pipeline keeps its original config.
   """
   def start_pipeline(opts \\ []) do
-    config = configure_merge(Application.get_env(:logger, :loki_logger) || [], opts)
-    ensure_supervisor(nil, build_loki_url(config), config)
+    case Process.whereis(LokiLogger.Supervisor) do
+      pid when is_pid(pid) ->
+        pid
+
+      nil ->
+        case Process.whereis(LokiLogger.AppSupervisor) do
+          nil ->
+            # AppSupervisor hasn't started yet — we're being called during
+            # :logger boot, before our own :loki_logger app started. Returning
+            # nil here keeps us from creating an orphan standalone Pipeline
+            # that would escape AppSupervisor's permanent supervision.
+            # LokiLogger.Application.start/2 will attach the pipeline once
+            # the OTP application boots.
+            nil
+
+          _ ->
+            config = configure_merge(Application.get_env(:logger, :loki_logger) || [], opts)
+
+            if config == [] do
+              raise ArgumentError,
+                    "LokiLogger.start_pipeline/1 called without :logger, :loki_logger config " <>
+                      "(and no opts supplied)"
+            end
+
+            attach_pipeline(config)
+        end
+    end
   end
 
-  ## Helpers
+  defp attach_pipeline(config) do
+    child_spec = %{
+      id: LokiLogger.Pipeline,
+      start: {LokiLogger.Pipeline, :start_link, [config]},
+      restart: :permanent,
+      type: :supervisor
+    }
+
+    case Supervisor.start_child(LokiLogger.AppSupervisor, child_spec) do
+      {:ok, pid} ->
+        pid
+
+      {:error, {:already_started, pid}} ->
+        pid
+
+      {:error, :already_present} ->
+        # Spec exists but the child was terminated; restart it.
+        case Supervisor.restart_child(LokiLogger.AppSupervisor, LokiLogger.Pipeline) do
+          {:ok, pid} -> pid
+          {:ok, pid, _info} -> pid
+          {:error, :running} -> Process.whereis(LokiLogger.Supervisor)
+        end
+    end
+  end
+
+  ## Internal helpers (exposed for LokiLogger.Pipeline; treat as @doc false)
+
+  @doc false
+  def build_loki_url(config) do
+    Keyword.get(config, :loki_host, "http://localhost:3100") <>
+      Keyword.get(config, :loki_path, "/loki/api/v1/push")
+  end
+
+  @doc false
+  def tesla_client(config) do
+    http_headers = [
+      {"Content-Type", "application/x-protobuf"},
+      {"X-Scope-OrgID", Keyword.get(config, :loki_scope_org_id, "fake")}
+    ]
+
+    basic_auth_user = Keyword.get(config, :basic_auth_user)
+    basic_auth_password = Keyword.get(config, :basic_auth_password)
+
+    case not is_nil(basic_auth_user) and not is_nil(basic_auth_password) do
+      true ->
+        [
+          {Tesla.Middleware.Headers, http_headers},
+          {Tesla.Middleware.BasicAuth,
+           %{username: basic_auth_user, password: basic_auth_password}}
+        ]
+
+      false ->
+        [
+          {Tesla.Middleware.Headers, http_headers}
+        ]
+    end
+    |> Tesla.client({Tesla.Adapter.Finch, name: LokiLogger.Finch})
+  end
+
+  ## Private
 
   defp meet_level?(_lvl, nil), do: true
   defp meet_level?(lvl, min), do: Logger.compare_levels(lvl, min) != :lt
@@ -109,6 +196,12 @@ defmodule LokiLogger do
   end
 
   defp init(config, state) do
+    # Safety net: ensure the pipeline is up. If the LokiLogger app already
+    # started it as a permanent child of AppSupervisor (the typical case),
+    # this is a no-op. If config arrived after Application.start/2 ran,
+    # this attaches the pipeline now.
+    _ = start_pipeline()
+
     %{
       state
       | format:
@@ -116,49 +209,8 @@ defmodule LokiLogger do
             Keyword.get(config, :format, "$time $metadata[$level] $message\n")
           ),
         metadata: Keyword.get(config, :metadata, :all) |> configure_metadata(),
-        level: Keyword.get(config, :level, :info),
-        supervisor: ensure_supervisor(state.supervisor, build_loki_url(config), config)
+        level: Keyword.get(config, :level, :info)
     }
-  end
-
-  defp build_loki_url(config) do
-    Keyword.get(config, :loki_host, "http://localhost:3100") <>
-      Keyword.get(config, :loki_path, "/loki/api/v1/push")
-  end
-
-  defp ensure_supervisor(sup, _loki_url, _config) when is_pid(sup) do
-    # Reuse the running supervisor; runtime reconfigure of network/labels is
-    # intentionally not applied to avoid bouncing pools mid-flight.
-    if Process.alive?(sup), do: sup, else: nil
-  end
-
-  defp ensure_supervisor(_sup, loki_url, config) do
-    pool_size = Keyword.get(config, :pool_size, 16)
-    pool_count = Keyword.get(config, :pool_count, 4)
-
-    children = [
-      {Finch,
-       name: LokiLogger.Finch,
-       pools: %{
-         loki_url => [size: pool_size, count: pool_count, pool_max_idle_time: 10_000]
-       }},
-      {Task.Supervisor, name: LokiLogger.TaskSupervisor},
-      {LokiLogger.Exporter,
-       loki_labels: Keyword.get(config, :loki_labels, %{application: "loki_logger_library"}),
-       loki_url: loki_url,
-       max_buffer: Keyword.get(config, :max_buffer, 300),
-       max_concurrency: Keyword.get(config, :max_concurrency, pool_count),
-       max_overflow: Keyword.get(config, :max_overflow, 100),
-       flush_interval_ms: Keyword.get(config, :flush_interval_ms, 5_000),
-       max_retries: Keyword.get(config, :max_retries, 3),
-       retry_base_ms: Keyword.get(config, :retry_base_ms, 200),
-       tesla_client: tesla_client(config)}
-    ]
-
-    case Supervisor.start_link(children, strategy: :one_for_one, name: LokiLogger.Supervisor) do
-      {:ok, pid} -> pid
-      {:error, {:already_started, pid}} -> pid
-    end
   end
 
   defp configure_metadata(:all), do: :all
@@ -187,30 +239,5 @@ defmodule LokiLogger do
         _ -> acc
       end
     end)
-  end
-
-  defp tesla_client(config) do
-    http_headers = [
-      {"Content-Type", "application/x-protobuf"},
-      {"X-Scope-OrgID", Keyword.get(config, :loki_scope_org_id, "fake")}
-    ]
-
-    basic_auth_user = Keyword.get(config, :basic_auth_user)
-    basic_auth_password = Keyword.get(config, :basic_auth_password)
-
-    case not is_nil(basic_auth_user) and not is_nil(basic_auth_password) do
-      true ->
-        [
-          {Tesla.Middleware.Headers, http_headers},
-          {Tesla.Middleware.BasicAuth,
-           %{username: basic_auth_user, password: basic_auth_password}}
-        ]
-
-      false ->
-        [
-          {Tesla.Middleware.Headers, http_headers}
-        ]
-    end
-    |> Tesla.client({Tesla.Adapter.Finch, name: LokiLogger.Finch})
   end
 end
