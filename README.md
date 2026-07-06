@@ -115,7 +115,7 @@ Both Option A and Option B share the same `LokiLogger.Exporter` internally
 | `loki_host` | `"http://localhost:3100"` | Loki base URL |
 | `loki_path` | `"/loki/api/v1/push"` | Push endpoint path |
 | `loki_labels` | `%{application: "loki_logger_library"}` | Stream labels |
-| `loki_scope_org_id` | `"fake"` | `X-Scope-OrgID` header (multitenancy) |
+| `loki_scope_org_id` | — (omitted) | `X-Scope-OrgID` header (multitenancy). Sent only when set. Loki accepts any string; VictoriaLogs needs a numeric `AccountID` (e.g. `"0"`) |
 | `basic_auth_user` / `basic_auth_password` | — | HTTP basic auth |
 | `level` | `:info` | Minimum log level |
 | `format` | `"$time $metadata[$level] $message\n"` | Logger format string (honored by both backends) |

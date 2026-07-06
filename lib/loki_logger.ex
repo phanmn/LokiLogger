@@ -160,10 +160,16 @@ defmodule LokiLogger do
 
   @doc false
   def tesla_client(config) do
-    http_headers = [
-      {"Content-Type", "application/x-protobuf"},
-      {"X-Scope-OrgID", Keyword.get(config, :loki_scope_org_id, "fake")}
-    ]
+    # Only send X-Scope-OrgID when explicitly configured. Loki accepts any string
+    # tenant, but VictoriaLogs requires a numeric AccountID and rejects the batch
+    # with a 400 otherwise — so omit the header entirely when unset.
+    org_id_header =
+      case Keyword.get(config, :loki_scope_org_id) do
+        nil -> []
+        org_id -> [{"X-Scope-OrgID", to_string(org_id)}]
+      end
+
+    http_headers = [{"Content-Type", "application/x-protobuf"} | org_id_header]
 
     basic_auth_user = Keyword.get(config, :basic_auth_user)
     basic_auth_password = Keyword.get(config, :basic_auth_password)
