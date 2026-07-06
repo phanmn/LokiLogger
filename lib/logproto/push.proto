@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+// Minimal subset of Grafana Loki's logproto push API, sufficient to submit
+// log entries. Field numbers match grafana/loki pkg/logproto/logproto.proto so
+// the snappy-compressed protobuf body is wire-compatible with Loki/VictoriaLogs.
+package logproto;
+
+import "google/protobuf/timestamp.proto";
+
+message PushRequest {
+  repeated StreamAdapter streams = 1;
+}
+
+message StreamAdapter {
+  string labels = 1;
+  repeated EntryAdapter entries = 2;
+  uint64 hash = 3;
+}
+
+message EntryAdapter {
+  google.protobuf.Timestamp timestamp = 1;
+  string line = 2;
+}

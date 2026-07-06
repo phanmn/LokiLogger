@@ -278,7 +278,9 @@ defmodule LokiLogger.Exporter do
     }
 
     {:ok, bin_push_request} =
-      Logproto.PushRequest.encode(request)
+      request
+      |> Logproto.PushRequest.encode!()
+      |> IO.iodata_to_binary()
       |> :snappyer.compress()
 
     bin_push_request
