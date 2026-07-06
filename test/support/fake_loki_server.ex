@@ -87,7 +87,7 @@ defmodule LokiLogger.FakeLokiServer do
   defp decode_push(body) do
     try do
       {:ok, decompressed} = :snappyer.decompress(body)
-      {:ok, Logproto.PushRequest.decode(decompressed)}
+      {:ok, Logproto.PushRequest.decode!(decompressed)}
     rescue
       e -> {:error, e}
     end

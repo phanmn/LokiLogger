@@ -277,9 +277,11 @@ defmodule LokiLogger.Exporter do
       ]
     }
 
+    # protox's encode!/1 returns {iodata, byte_size}; take the iodata.
+    {iodata, _size} = Logproto.PushRequest.encode!(request)
+
     {:ok, bin_push_request} =
-      request
-      |> Logproto.PushRequest.encode!()
+      iodata
       |> IO.iodata_to_binary()
       |> :snappyer.compress()
 
