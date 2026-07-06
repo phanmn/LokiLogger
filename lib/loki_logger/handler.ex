@@ -137,7 +137,7 @@ defmodule LokiLogger.Handler do
         _ -> System.os_time(:nanosecond)
       end
 
-    Exporter.log_event({ts, line})
+    Exporter.log_event({ts, line, to_string(downgrade_level(level))})
     :ok
   end
 

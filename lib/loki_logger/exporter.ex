@@ -247,35 +247,39 @@ defmodule LokiLogger.Exporter do
   end
 
   defp generate_bin_push_request(loki_labels, output) do
-    labels =
-      loki_labels
-      |> Enum.map(fn {k, v} -> "#{k}=\"#{v}\"" end)
-      |> Enum.join(",")
+    base_labels = Enum.map(loki_labels, fn {k, v} -> "#{k}=\"#{v}\"" end)
 
-    labels = "{" <> labels <> "}"
-
-    # Entries arrive newest-first (prepended); sort once by ts so Loki accepts them.
-    sorted_entries =
+    # Entries carry an optional per-log level ({ts, line, level}). Group by level
+    # so each level becomes its own Loki stream with a `level` label — Loki and
+    # VictoriaLogs both use it for colouring/filtering. Entries without a level
+    # ({ts, line}) fall into one stream with just the base labels.
+    streams =
       output
-      |> List.keysort(0)
-      |> Enum.map(fn {ts, line} ->
-        seconds = div(ts, 1_000_000_000)
-        nanos = ts - seconds * 1_000_000_000
+      |> Enum.group_by(&entry_level/1)
+      |> Enum.map(fn {level, entries} ->
+        parts = if is_nil(level) or level == "", do: base_labels, else: base_labels ++ ["level=\"#{level}\""]
+        labels = "{" <> Enum.join(parts, ",") <> "}"
 
-        %Logproto.EntryAdapter{
-          timestamp: %Google.Protobuf.Timestamp{seconds: seconds, nanos: nanos},
-          line: line
-        }
+        # Entries arrive newest-first (prepended); sort once by ts so Loki accepts them.
+        sorted_entries =
+          entries
+          |> List.keysort(0)
+          |> Enum.map(fn entry ->
+            ts = elem(entry, 0)
+            line = elem(entry, 1)
+            seconds = div(ts, 1_000_000_000)
+            nanos = ts - seconds * 1_000_000_000
+
+            %Logproto.EntryAdapter{
+              timestamp: %Google.Protobuf.Timestamp{seconds: seconds, nanos: nanos},
+              line: line
+            }
+          end)
+
+        %Logproto.StreamAdapter{labels: labels, entries: sorted_entries}
       end)
 
-    request = %Logproto.PushRequest{
-      streams: [
-        %Logproto.StreamAdapter{
-          labels: labels,
-          entries: sorted_entries
-        }
-      ]
-    }
+    request = %Logproto.PushRequest{streams: streams}
 
     # protox's encode!/1 returns {iodata, byte_size}; take the iodata.
     {iodata, _size} = Logproto.PushRequest.encode!(request)
@@ -287,4 +291,9 @@ defmodule LokiLogger.Exporter do
 
     bin_push_request
   end
+
+  # Extract the optional per-log level from an entry (backward compatible with
+  # plain {ts, line} entries, which have no level).
+  defp entry_level({_ts, _line, level}), do: level
+  defp entry_level({_ts, _line}), do: nil
 end

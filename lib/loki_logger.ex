@@ -55,7 +55,7 @@ defmodule LokiLogger do
 
   def handle_event({level, _gl, {Logger, msg, ts, md}}, state) do
     if meet_level?(level, state.level) do
-      entry = {System.os_time(:nanosecond), format_event(level, msg, ts, md, state)}
+      entry = {System.os_time(:nanosecond), format_event(level, msg, ts, md, state), to_string(level)}
       LokiLogger.Exporter.log_event(entry)
     end
 
